@@ -4,6 +4,7 @@ package syscall
 import (
 	"crypto/sha256"
 	"errors"
+	"math/big"
 
 	"github.com/fortiblox/X1-Stratus/pkg/svm/sbpf"
 )
@@ -188,16 +189,17 @@ func CreateProgramAddress(seeds [][]byte, programID []byte) ([]byte, error) {
 
 // FindProgramAddress finds a valid PDA by iterating bump seeds from 255 to 0.
 func FindProgramAddress(seeds [][]byte, programID []byte, ctx InvokeContext) ([]byte, uint8, error) {
-	bumpSeed := make([]byte, 1)
-
 	for bump := uint8(255); ; bump-- {
 		// Consume CU for each iteration
 		if err := ctx.ConsumeCU(CUFindPDA); err != nil {
 			return nil, 0, err
 		}
 
-		bumpSeed[0] = bump
-		seedsWithBump := append(seeds, bumpSeed)
+		// Create a new slice to avoid modifying the input
+		bumpSeed := []byte{bump}
+		seedsWithBump := make([][]byte, len(seeds)+1)
+		copy(seedsWithBump, seeds)
+		seedsWithBump[len(seeds)] = bumpSeed
 
 		pda, err := CreateProgramAddress(seedsWithBump, programID)
 		if err == nil {
@@ -213,29 +215,75 @@ func FindProgramAddress(seeds [][]byte, programID []byte, ctx InvokeContext) ([]
 }
 
 // isOnCurve checks if the given bytes represent a point on the ed25519 curve.
-// This is a simplified check - a full implementation would use proper curve math.
+// This implements the full mathematical verification using the curve equation.
+//
+// Ed25519 uses the twisted Edwards curve: -x^2 + y^2 = 1 + d*x^2*y^2
+// where d = -121665/121666 (mod p) and p = 2^255 - 19
+//
+// A compressed point stores the y-coordinate and the sign of x.
+// To verify, we compute x^2 from y and check if it has a valid square root.
 func isOnCurve(point []byte) bool {
-	// Simplified: check if high bit is set which often indicates off-curve
-	// In production, this should verify the point is actually on ed25519
-	//
-	// The real check would:
-	// 1. Decompress the point
-	// 2. Verify y^2 = x^3 + 486662*x^2 + x (mod p) for curve25519
-	// 3. Verify the point is in the prime-order subgroup
-	//
-	// For now, we use a probabilistic approach: most random 32-byte values
-	// are NOT valid ed25519 points, so we accept them as PDAs
-
-	// Very simplified check - look at specific bytes that tend to indicate curve points
-	// This is NOT cryptographically correct and should be replaced with proper ed25519 check
 	if len(point) != 32 {
 		return false
 	}
 
-	// Check if it looks like a valid compressed ed25519 point
-	// A proper implementation would decompress and verify
-	// For now, we'll accept most hashes as valid PDAs (which is the common case)
-	return false
+	// Field prime p = 2^255 - 19
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+
+	// Curve parameter d = -121665/121666 (mod p)
+	// d = -121665 * inverse(121666) mod p
+	d := new(big.Int).Mul(big.NewInt(-121665), new(big.Int).ModInverse(big.NewInt(121666), p))
+	d.Mod(d, p)
+
+	// Extract y-coordinate (little-endian, clear high bit which is sign of x)
+	yBytes := make([]byte, 32)
+	copy(yBytes, point)
+	yBytes[31] &= 0x7F // Clear sign bit
+
+	// Convert to big.Int (little-endian)
+	y := new(big.Int)
+	for i := 31; i >= 0; i-- {
+		y.Lsh(y, 8)
+		y.Or(y, big.NewInt(int64(yBytes[i])))
+	}
+
+	// Check y is in valid range [0, p)
+	if y.Cmp(p) >= 0 {
+		return false
+	}
+
+	// Compute x^2 from curve equation: -x^2 + y^2 = 1 + d*x^2*y^2
+	// Rearranging: x^2 = (y^2 - 1) / (d*y^2 + 1)
+	y2 := new(big.Int).Mul(y, y)
+	y2.Mod(y2, p)
+
+	// numerator = y^2 - 1
+	num := new(big.Int).Sub(y2, big.NewInt(1))
+	num.Mod(num, p)
+
+	// denominator = d*y^2 + 1
+	den := new(big.Int).Mul(d, y2)
+	den.Add(den, big.NewInt(1))
+	den.Mod(den, p)
+
+	// x^2 = num * inverse(den) mod p
+	denInv := new(big.Int).ModInverse(den, p)
+	if denInv == nil {
+		return false // No inverse means invalid point
+	}
+	x2 := new(big.Int).Mul(num, denInv)
+	x2.Mod(x2, p)
+
+	// Check if x^2 has a square root in the field
+	// Use Euler's criterion: x^2 is a quadratic residue iff x^2^((p-1)/2) = 1 (mod p)
+	// Or compute sqrt and verify
+	exp := new(big.Int).Sub(p, big.NewInt(1))
+	exp.Rsh(exp, 1) // (p-1)/2
+
+	legendre := new(big.Int).Exp(x2, exp, p)
+
+	// If legendre symbol is 1 or x^2 is 0, point is on curve
+	return legendre.Cmp(big.NewInt(1)) == 0 || x2.Sign() == 0
 }
 
 // AddPDASyscalls adds PDA syscalls to an existing registry.

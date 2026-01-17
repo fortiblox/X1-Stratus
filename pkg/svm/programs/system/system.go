@@ -262,9 +262,22 @@ func (p *Processor) processTransfer(ctx InvokeContext, data []byte) error {
 		return ErrMissingRequiredSignature
 	}
 
+	// Verify accounts are writable
+	if !from.IsWritable {
+		return errors.New("source account not writable")
+	}
+	if !to.IsWritable {
+		return errors.New("destination account not writable")
+	}
+
 	// Check balance
 	if from.Lamports < lamports {
 		return ErrInsufficientFunds
+	}
+
+	// Check for overflow on destination
+	if to.Lamports > ^uint64(0)-lamports {
+		return errors.New("lamport overflow")
 	}
 
 	// Execute transfer

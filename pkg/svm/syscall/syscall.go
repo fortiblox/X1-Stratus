@@ -43,11 +43,12 @@ const (
 
 // Maximum sizes.
 const (
-	MaxLogMsgLen       = 10000    // Maximum log message length
-	MaxPubkeySeeds     = 16       // Maximum seeds for PDA
-	MaxSeedLen         = 32       // Maximum seed length
-	MaxReturnData      = 1024     // Maximum return data size
-	MaxCPIInstructionData = 10240 // Maximum CPI instruction data
+	MaxLogMsgLen          = 10000             // Maximum log message length
+	MaxPubkeySeeds        = 16                // Maximum seeds for PDA
+	MaxSeedLen            = 32                // Maximum seed length
+	MaxReturnData         = 1024              // Maximum return data size
+	MaxCPIInstructionData = 10240             // Maximum CPI instruction data
+	MaxMemOpSize          = 10 * 1024 * 1024  // Maximum memory operation size (10 MB)
 )
 
 // InvokeContext provides execution context to syscalls.
@@ -232,7 +233,15 @@ func (r *Registry) registerMemory(ctx InvokeContext) {
 			return 0, nil
 		}
 
-		// Compute cost
+		// Validate size to prevent DoS via memory exhaustion
+		if n > MaxMemOpSize {
+			return 0, ErrInvalidLength
+		}
+
+		// Check for compute cost overflow
+		if n > (^uint64(0)-CUMemOpBase)/CUMemOpPerByte {
+			return 0, ErrComputeExceeded
+		}
 		cost := CUMemOpBase + CUMemOpPerByte*n
 		if err := ctx.ConsumeCU(cost); err != nil {
 			return 0, err
@@ -260,6 +269,15 @@ func (r *Registry) registerMemory(ctx InvokeContext) {
 			return 0, nil
 		}
 
+		// Validate size to prevent DoS
+		if n > MaxMemOpSize {
+			return 0, ErrInvalidLength
+		}
+
+		// Check for compute cost overflow
+		if n > (^uint64(0)-CUMemOpBase)/CUMemOpPerByte {
+			return 0, ErrComputeExceeded
+		}
 		cost := CUMemOpBase + CUMemOpPerByte*n
 		if err := ctx.ConsumeCU(cost); err != nil {
 			return 0, err
@@ -287,6 +305,15 @@ func (r *Registry) registerMemory(ctx InvokeContext) {
 			return 0, nil
 		}
 
+		// Validate size to prevent DoS
+		if n > MaxMemOpSize {
+			return 0, ErrInvalidLength
+		}
+
+		// Check for compute cost overflow
+		if n > (^uint64(0)-CUMemOpBase)/CUMemOpPerByte {
+			return 0, ErrComputeExceeded
+		}
 		cost := CUMemOpBase + CUMemOpPerByte*n
 		if err := ctx.ConsumeCU(cost); err != nil {
 			return 0, err

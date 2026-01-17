@@ -284,8 +284,25 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 		off := int16(ins >> 16)
 		imm := int32(ins >> 32)
 
+		// Validate register indices (sBPF has 11 registers: R0-R10)
+		if dst > 10 || src > 10 {
+			return 0, fmt.Errorf("%w: invalid register index dst=%d src=%d", ErrInvalidInstruction, dst, src)
+		}
+
 		// Execute instruction
 		switch op {
+		// 64-bit immediate load (uses two instruction slots)
+		case OpLddw:
+			if pc+1 >= int64(len(ip.text)) {
+				return 0, fmt.Errorf("%w: incomplete lddw at pc %d", ErrInvalidInstruction, pc)
+			}
+			if dst == 10 {
+				return 0, fmt.Errorf("%w: cannot write to R10", ErrInvalidInstruction)
+			}
+			nextIns := ip.text[pc+1]
+			imm64 := uint64(uint32(imm)) | (uint64(nextIns>>32) << 32)
+			r[dst] = imm64
+			pc++ // Skip the second instruction slot
 		// ALU64 immediate
 		case OpAdd64Imm:
 			r[dst] += uint64(imm)
@@ -381,6 +398,10 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 			r[dst] = uint64(uint32(r[dst]) ^ uint32(imm))
 		case OpMov32Imm:
 			r[dst] = uint64(uint32(imm))
+		case OpNeg32:
+			r[dst] = uint64(uint32(-int32(r[dst])))
+		case OpArsh32Imm:
+			r[dst] = uint64(uint32(int32(r[dst]) >> (uint32(imm) & 31)))
 
 		// ALU32 register
 		case OpAdd32Reg:
@@ -411,6 +432,8 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 			r[dst] = uint64(uint32(r[dst]) ^ uint32(r[src]))
 		case OpMov32Reg:
 			r[dst] = uint64(uint32(r[src]))
+		case OpArsh32Reg:
+			r[dst] = uint64(uint32(int32(r[dst]) >> (uint32(r[src]) & 31)))
 
 		// Memory load
 		case OpLdxb:

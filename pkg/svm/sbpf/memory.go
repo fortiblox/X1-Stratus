@@ -13,16 +13,23 @@ func (ip *Interpreter) Translate(addr uint64, size uint64, write bool) ([]byte, 
 	hi := addr >> 32
 	lo := addr & 0xFFFFFFFF
 
+	// Check for integer overflow in address calculation
+	if size > 0 && lo > ^uint64(0)-size {
+		return nil, fmt.Errorf("%w: address overflow at 0x%x (size %d)", ErrInvalidMemoryAccess, addr, size)
+	}
+	end := lo + size
+
 	switch hi {
 	case VaddrProgram >> 32:
 		// Program/RO segment - read only
 		if write {
 			return nil, fmt.Errorf("%w: write to read-only program segment at 0x%x", ErrInvalidMemoryAccess, addr)
 		}
-		if lo+size > uint64(len(ip.ro)) {
-			return nil, fmt.Errorf("%w: read beyond program segment at 0x%x (size %d, max %d)", ErrInvalidMemoryAccess, addr, size, len(ip.ro))
+		roLen := uint64(len(ip.ro))
+		if end > roLen || lo > end {
+			return nil, fmt.Errorf("%w: read beyond program segment at 0x%x (size %d, max %d)", ErrInvalidMemoryAccess, addr, size, roLen)
 		}
-		return ip.ro[lo : lo+size], nil
+		return ip.ro[lo:end], nil
 
 	case VaddrStack >> 32:
 		// Stack segment
@@ -34,20 +41,22 @@ func (ip *Interpreter) Translate(addr uint64, size uint64, write bool) ([]byte, 
 
 	case VaddrHeap >> 32:
 		// Heap segment
-		if lo+size > uint64(len(ip.heap)) {
-			return nil, fmt.Errorf("%w: heap access at 0x%x (size %d, heap size %d)", ErrInvalidMemoryAccess, addr, size, len(ip.heap))
+		heapLen := uint64(len(ip.heap))
+		if end > heapLen || lo > end {
+			return nil, fmt.Errorf("%w: heap access at 0x%x (size %d, heap size %d)", ErrInvalidMemoryAccess, addr, size, heapLen)
 		}
-		return ip.heap[lo : lo+size], nil
+		return ip.heap[lo:end], nil
 
 	case VaddrInput >> 32:
 		// Input segment - read only
 		if write {
 			return nil, fmt.Errorf("%w: write to read-only input segment at 0x%x", ErrInvalidMemoryAccess, addr)
 		}
-		if lo+size > uint64(len(ip.input)) {
-			return nil, fmt.Errorf("%w: read beyond input segment at 0x%x (size %d, max %d)", ErrInvalidMemoryAccess, addr, size, len(ip.input))
+		inputLen := uint64(len(ip.input))
+		if end > inputLen || lo > end {
+			return nil, fmt.Errorf("%w: read beyond input segment at 0x%x (size %d, max %d)", ErrInvalidMemoryAccess, addr, size, inputLen)
 		}
-		return ip.input[lo : lo+size], nil
+		return ip.input[lo:end], nil
 
 	default:
 		return nil, fmt.Errorf("%w: unmapped region at 0x%x", ErrInvalidMemoryAccess, addr)
