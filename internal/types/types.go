@@ -7,10 +7,11 @@ package types
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base58"
 	"encoding/hex"
 	"errors"
 	"fmt"
+
+	"github.com/mr-tron/base58"
 )
 
 // Size constants for core types.
@@ -201,6 +202,11 @@ func HashFromBytes(b []byte) (Hash, error) {
 
 // ComputeHash computes the SHA256 hash of data.
 func ComputeHash(data []byte) Hash {
+	return sha256.Sum256(data)
+}
+
+// HashBytes is an alias for ComputeHash for convenience.
+func HashBytes(data []byte) Hash {
 	return sha256.Sum256(data)
 }
 

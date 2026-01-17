@@ -46,8 +46,6 @@ const (
 // Maximum sizes.
 const (
 	MaxLogMsgLen          = 10000             // Maximum log message length
-	MaxPubkeySeeds        = 16                // Maximum seeds for PDA
-	MaxSeedLen            = 32                // Maximum seed length
 	MaxReturnData         = 1024              // Maximum return data size
 	MaxCPIInstructionData = 10240             // Maximum CPI instruction data
 	MaxMemOpSize          = 10 * 1024 * 1024  // Maximum memory operation size (10 MB)
@@ -339,6 +337,11 @@ func (r *Registry) registerMemory(ctx InvokeContext) {
 	r.register("sol_memcmp_", func(vm sbpf.VM, r1, r2, r3, r4, r5 uint64) (uint64, error) {
 		addr1, addr2, n, resultAddr := r1, r2, r3, r4
 
+		// Validate length to prevent unbounded allocation
+		if n > MaxMemOpSize {
+			return 0, ErrInvalidLength
+		}
+
 		cost := CUMemOpBase + CUMemOpPerByte*n
 		if err := ctx.ConsumeCU(cost); err != nil {
 			return 0, err
@@ -439,6 +442,11 @@ func (r *Registry) registerCrypto(ctx InvokeContext) {
 			length, err := vm.Read64(r1 + i*16 + 8)
 			if err != nil {
 				return 0, err
+			}
+
+			// Validate length to prevent unbounded allocation
+			if length > MaxMemOpSize {
+				return 0, ErrInvalidLength
 			}
 
 			if err := ctx.ConsumeCU(CUSha256PerByte * length); err != nil {

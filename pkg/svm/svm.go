@@ -19,9 +19,6 @@ var (
 	// ErrNotImplemented is returned for unimplemented features.
 	ErrNotImplemented = errors.New("not implemented")
 
-	// ErrComputeExceeded is returned when compute units are exhausted.
-	ErrComputeExceeded = errors.New("compute units exceeded")
-
 	// ErrAccountNotFound is returned when a required account is missing.
 	ErrAccountNotFound = errors.New("account not found")
 

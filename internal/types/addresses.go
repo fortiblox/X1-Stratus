@@ -1,6 +1,8 @@
 // Package types provides well-known program addresses for the Solana/X1 network.
 package types
 
+import "fmt"
+
 // Native program addresses.
 // These are the same across Solana mainnet and X1.
 var (
@@ -71,7 +73,7 @@ var (
 	SysvarFeesAddr = MustPubkeyFromBase58("SysvarFees111111111111111111111111111111111")
 
 	// SysvarRecentBlockhashesAddr is the Recent Blockhashes sysvar address (deprecated).
-	SysvarRecentBlockhashesAddr = MustPubkeyFromBase58("SysvarRecentB1teleases111111111111111111111")
+	SysvarRecentBlockhashesAddr = MustPubkeyFromBase58("SysvarRecentB1ockHashes11111111111111111111")
 
 	// SysvarSlotHashesAddr is the Slot Hashes sysvar address.
 	SysvarSlotHashesAddr = MustPubkeyFromBase58("SysvarS1otHashes111111111111111111111111111")

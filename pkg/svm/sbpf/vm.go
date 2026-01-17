@@ -113,7 +113,7 @@ type VM interface {
 	Write(addr uint64, p []byte) error
 	Write8(addr uint64, x uint8) error
 	Write16(addr uint64, x uint16) error
-	Write32(addr uint64, x uint64) error
+	Write32(addr uint64, x uint32) error
 	Write64(addr uint64, x uint64) error
 
 	// Memory translation

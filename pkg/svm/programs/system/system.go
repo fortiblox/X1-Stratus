@@ -613,6 +613,11 @@ func (p *Processor) processTransferWithSeed(ctx InvokeContext, data []byte) erro
 		return ErrInsufficientFunds
 	}
 
+	// Check for overflow on destination
+	if to.Lamports > ^uint64(0)-lamports {
+		return errors.New("lamport overflow")
+	}
+
 	// Execute
 	from.Lamports -= lamports
 	to.Lamports += lamports
