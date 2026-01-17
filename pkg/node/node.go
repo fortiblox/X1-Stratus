@@ -25,6 +25,8 @@ import (
 	"github.com/fortiblox/X1-Stratus/pkg/blockstore"
 	"github.com/fortiblox/X1-Stratus/pkg/geyser"
 	"github.com/fortiblox/X1-Stratus/pkg/replayer"
+	"github.com/fortiblox/X1-Stratus/pkg/rpc"
+	"github.com/fortiblox/X1-Stratus/pkg/snapshot"
 )
 
 // Node errors.
@@ -64,7 +66,19 @@ type Config struct {
 	StartSlot uint64
 
 	// SnapshotPath is an optional path to load initial state from a snapshot.
+	// Supports both X1-Stratus native (.x1snap) and Solana (.tar.zst) snapshot formats.
 	SnapshotPath string
+
+	// SolanaSnapshotDir is a directory containing Solana snapshots.
+	// If set, the node will automatically find and load the latest snapshot.
+	SolanaSnapshotDir string
+
+	// VerifySnapshotHash enables hash verification when loading Solana snapshots.
+	// Recommended but may add loading time.
+	VerifySnapshotHash bool
+
+	// OnSnapshotProgress is called during snapshot loading with progress updates.
+	OnSnapshotProgress func(accountsLoaded uint64)
 
 	// VerifyBankHash enables bank hash verification during replay.
 	// Recommended for full verification but adds overhead.
@@ -85,6 +99,16 @@ type Config struct {
 	// If exceeded, the node will attempt to catch up.
 	MaxSlotLag uint64
 
+	// RPC server configuration.
+	// RPCEnabled enables the JSON-RPC server.
+	RPCEnabled bool
+
+	// RPCAddr is the listen address for the RPC server (default ":8899").
+	RPCAddr string
+
+	// RPCLogRequests enables logging of RPC requests.
+	RPCLogRequests bool
+
 	// Callbacks for monitoring.
 	OnSlotProcessed func(slot uint64, bankHash types.Hash)
 	OnSyncProgress  func(current, target uint64)
@@ -102,6 +126,10 @@ func DefaultConfig() Config {
 		PruneEnabled:              true,
 		PruneRetainSlots:          blockstore.DefaultPruneSlots,
 		MaxSlotLag:                100,
+		VerifySnapshotHash:        true,
+		RPCEnabled:                false,
+		RPCAddr:                   ":8899",
+		RPCLogRequests:            false,
 	}
 }
 
@@ -122,10 +150,11 @@ type Node struct {
 	config Config
 
 	// Core components
-	geyser   *geyser.Client
-	blocks   blockstore.Store
-	accounts accounts.DB
-	replayer *replayer.Replayer
+	geyser    *geyser.Client
+	blocks    blockstore.Store
+	accounts  accounts.DB
+	replayer  *replayer.Replayer
+	rpcServer *rpc.Server
 
 	// State management
 	mu           sync.RWMutex
@@ -219,6 +248,20 @@ func (n *Node) Start(ctx context.Context) error {
 	n.wg.Add(1)
 	go n.blockIngestionLoop()
 
+	// Start RPC server if enabled
+	if n.rpcServer != nil {
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			if err := n.rpcServer.Start(n.ctx); err != nil {
+				n.setLastError(fmt.Errorf("RPC server error: %w", err))
+				if n.config.OnError != nil {
+					n.config.OnError(err)
+				}
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -255,13 +298,9 @@ func (n *Node) initialize() error {
 	n.accounts = accts
 
 	// Load snapshot if provided
-	if n.config.SnapshotPath != "" {
-		if snapDB, ok := n.accounts.(accounts.SnapshotableDB); ok {
-			if err := snapDB.LoadSnapshot(n.config.SnapshotPath); err != nil {
-				n.closeStorage()
-				return fmt.Errorf("load snapshot: %w", err)
-			}
-		}
+	if err := n.loadInitialSnapshot(accts); err != nil {
+		n.closeStorage()
+		return fmt.Errorf("load snapshot: %w", err)
 	}
 
 	// Initialize replayer
@@ -318,7 +357,121 @@ func (n *Node) initialize() error {
 	}
 	n.geyser = geyserClient
 
+	// Initialize RPC server if enabled
+	if n.config.RPCEnabled {
+		rpcConfig := rpc.DefaultConfig()
+		rpcConfig.Addr = n.config.RPCAddr
+		rpcConfig.LogRequests = n.config.RPCLogRequests
+		rpcConfig.EnableCORS = true
+
+		n.rpcServer = rpc.New(rpcConfig, accts, blocks)
+	}
+
 	return nil
+}
+
+// loadInitialSnapshot loads initial state from a snapshot if configured.
+func (n *Node) loadInitialSnapshot(accts accounts.DB) error {
+	// Determine which snapshot to load
+	var snapshotPath string
+	var isSolanaSnapshot bool
+
+	if n.config.SnapshotPath != "" {
+		snapshotPath = n.config.SnapshotPath
+		// Detect Solana snapshot format by extension
+		isSolanaSnapshot = isSolanaSnapshotPath(snapshotPath)
+	} else if n.config.SolanaSnapshotDir != "" {
+		// Find the latest Solana snapshot in the directory
+		latestSnapshot, err := snapshot.FindLatestSnapshot(n.config.SolanaSnapshotDir)
+		if err != nil {
+			if errors.Is(err, snapshot.ErrSnapshotNotFound) {
+				// No snapshot found, continue without loading
+				return nil
+			}
+			return fmt.Errorf("find snapshot: %w", err)
+		}
+		snapshotPath = latestSnapshot.Path
+		isSolanaSnapshot = true
+	}
+
+	if snapshotPath == "" {
+		return nil
+	}
+
+	if isSolanaSnapshot {
+		// Load Solana snapshot format
+		return n.loadSolanaSnapshot(snapshotPath, accts)
+	}
+
+	// Load native X1-Stratus snapshot format
+	if snapDB, ok := accts.(accounts.SnapshotableDB); ok {
+		return snapDB.LoadSnapshot(snapshotPath)
+	}
+
+	return fmt.Errorf("accounts DB does not support snapshot loading")
+}
+
+// loadSolanaSnapshot loads a Solana format snapshot (.tar.zst or .tar).
+func (n *Node) loadSolanaSnapshot(path string, accts accounts.DB) error {
+	// Verify hash if configured
+	if n.config.VerifySnapshotHash {
+		valid, err := snapshot.VerifySnapshotHash(path)
+		if err != nil {
+			// Non-fatal: we can still try to load even if verification fails
+			// This might happen with some snapshot versions
+		} else if !valid {
+			return fmt.Errorf("%w: hash in filename does not match content", snapshot.ErrHashMismatch)
+		}
+	}
+
+	// Use streaming loader for large snapshots
+	loader, err := snapshot.NewStreamingLoader(path, accts)
+	if err != nil {
+		return fmt.Errorf("create snapshot loader: %w", err)
+	}
+
+	// Set progress callback if configured
+	if n.config.OnSnapshotProgress != nil {
+		loader.SetProgressCallback(n.config.OnSnapshotProgress)
+	}
+
+	// Load the snapshot
+	result, err := loader.Load()
+	if err != nil {
+		return fmt.Errorf("load snapshot: %w", err)
+	}
+
+	// Initialize replayer state from snapshot
+	if n.replayer != nil && result.Slot > 0 {
+		n.replayer.Initialize(result.Slot, result.Blockhash, result.BankHash)
+	}
+
+	// Update current slot
+	n.currentSlot.Store(result.Slot)
+
+	return nil
+}
+
+// isSolanaSnapshotPath checks if a path looks like a Solana snapshot.
+func isSolanaSnapshotPath(path string) bool {
+	// Get the base filename
+	base := filepath.Base(path)
+
+	// Solana snapshots are .tar or .tar.zst files
+	if len(base) >= 4 && base[len(base)-4:] == ".tar" {
+		return true
+	}
+	if len(base) >= 8 && base[len(base)-8:] == ".tar.zst" {
+		return true
+	}
+	// Check for Solana snapshot naming convention
+	if len(base) >= 9 && base[:9] == "snapshot-" {
+		return true
+	}
+	if len(base) >= 21 && base[:21] == "incremental-snapshot-" {
+		return true
+	}
+	return false
 }
 
 // closeStorage closes all storage backends.
@@ -664,6 +817,11 @@ func (n *Node) Stop() error {
 	// Wait for goroutines to finish
 	n.wg.Wait()
 
+	// Stop RPC server
+	if n.rpcServer != nil {
+		n.rpcServer.Stop()
+	}
+
 	// Close Geyser client
 	if n.geyser != nil {
 		n.geyser.Close()
@@ -708,6 +866,11 @@ func (n *Node) Status() *Status {
 		blockstoreStats, _ = n.blocks.GetStats()
 	}
 
+	var rpcAddr string
+	if n.rpcServer != nil {
+		rpcAddr = n.config.RPCAddr
+	}
+
 	return &Status{
 		CurrentSlot:      n.currentSlot.Load(),
 		LatestSlot:       n.latestSlot.Load(),
@@ -720,6 +883,7 @@ func (n *Node) Status() *Status {
 		AvgSlotTimeMs:    float64(n.slotProcessTimeNs.Load()) / float64(time.Millisecond),
 		GeyserHealth:     health,
 		BlockstoreStats:  blockstoreStats,
+		RPCAddr:          rpcAddr,
 		LastError:        n.getLastError(),
 	}
 }
@@ -758,6 +922,9 @@ type Status struct {
 
 	// BlockstoreStats contains blockstore statistics.
 	BlockstoreStats *blockstore.Stats
+
+	// RPCAddr is the RPC server address if enabled.
+	RPCAddr string
 
 	// LastError is the most recent error encountered.
 	LastError error

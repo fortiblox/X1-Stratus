@@ -9,6 +9,7 @@ import (
 	"github.com/fortiblox/X1-Stratus/pkg/accounts"
 	"github.com/fortiblox/X1-Stratus/pkg/blockstore"
 	"github.com/fortiblox/X1-Stratus/pkg/svm"
+	"github.com/fortiblox/X1-Stratus/pkg/svm/executor"
 	sysProgram "github.com/fortiblox/X1-Stratus/pkg/svm/programs/system"
 )
 
@@ -18,6 +19,12 @@ type TransactionExecutor struct {
 
 	// Native program processors
 	systemProcessor *sysProgram.Processor
+
+	// BPF executor for on-chain programs
+	bpfExecutor *executor.BPFExecutor
+
+	// EnableBPF controls whether BPF program execution is enabled
+	EnableBPF bool
 }
 
 // NewTransactionExecutor creates a new transaction executor.
@@ -25,6 +32,8 @@ func NewTransactionExecutor(accts accounts.DB) *TransactionExecutor {
 	return &TransactionExecutor{
 		accounts:        accts,
 		systemProcessor: sysProgram.NewProcessor(),
+		bpfExecutor:     executor.NewBPFExecutor(accts),
+		EnableBPF:       false, // Disabled by default for safety
 	}
 }
 
@@ -214,11 +223,19 @@ func (e *TransactionExecutor) executeInstruction(
 		err = e.executeSystemProgram(ctx, instruction.Data)
 	case isComputeBudgetProgram(programID):
 		err = e.executeComputeBudget(ctx, instruction.Data, computeMeter)
-	default:
-		// For BPF programs, we'd need to load and execute the bytecode
-		// For now, we trust the transaction metadata for CU consumption
-		result.Logs = append(result.Logs, fmt.Sprintf("Skipping BPF program: %s", programID.String()))
+	case isTokenProgram(programID), isBPFLoader(programID), isBPFLoaderUpgradeable(programID):
+		// Known native programs that we don't fully implement yet
+		result.Logs = append(result.Logs, fmt.Sprintf("Native program (not implemented): %s", programID.String()))
 		return nil
+	default:
+		// BPF program execution
+		if e.EnableBPF {
+			err = e.executeBPFProgram(programID, instruction, accountInfos, computeMeter, result)
+		} else {
+			// BPF disabled - skip execution but log
+			result.Logs = append(result.Logs, fmt.Sprintf("BPF program (execution disabled): %s", programID.String()))
+			return nil
+		}
 	}
 
 	if err != nil {
@@ -286,11 +303,95 @@ func (e *TransactionExecutor) executeComputeBudget(ctx *instructionContext, data
 	return nil
 }
 
+// executeBPFProgram executes a BPF program.
+func (e *TransactionExecutor) executeBPFProgram(
+	programID types.Pubkey,
+	instruction *blockstore.Instruction,
+	accountInfos []*accountInfo,
+	computeMeter *svm.ComputeMeter,
+	result *ExecutionResult,
+) error {
+	// Convert account infos to executor format
+	execAccounts := make([]*executor.AccountInfo, len(instruction.AccountIndexes))
+	for i, idx := range instruction.AccountIndexes {
+		if int(idx) >= len(accountInfos) {
+			return errors.New("invalid account index")
+		}
+		info := accountInfos[idx]
+		execAccounts[i] = &executor.AccountInfo{
+			Key:        info.key,
+			Owner:      types.Pubkey(info.account.Owner),
+			Lamports:   info.account.Lamports,
+			Data:       info.account.Data,
+			Executable: info.account.Executable,
+			RentEpoch:  info.account.RentEpoch,
+			IsSigner:   info.account.IsSigner,
+			IsWritable: info.account.IsWritable,
+		}
+	}
+
+	// Execute
+	execResult, err := e.bpfExecutor.ExecuteInstruction(
+		programID,
+		execAccounts,
+		instruction.Data,
+		computeMeter.Remaining(),
+	)
+	if err != nil {
+		return fmt.Errorf("BPF execution error: %w", err)
+	}
+
+	// Update compute meter
+	computeMeter.ConsumeChecked(execResult.ComputeUnitsUsed)
+
+	// Append logs
+	result.Logs = append(result.Logs, execResult.Logs...)
+
+	// If execution failed, return error
+	if !execResult.Success {
+		return fmt.Errorf("BPF program failed: %s", execResult.Error)
+	}
+
+	// Update account infos with results
+	for i, idx := range instruction.AccountIndexes {
+		if int(idx) >= len(accountInfos) {
+			continue
+		}
+		info := accountInfos[idx]
+		execAcc := execAccounts[i]
+
+		if info.account.IsWritable {
+			// Check if modified
+			if info.account.Lamports != execAcc.Lamports ||
+				len(info.account.Data) != len(execAcc.Data) {
+				info.modified = true
+			} else {
+				for j := range info.account.Data {
+					if info.account.Data[j] != execAcc.Data[j] {
+						info.modified = true
+						break
+					}
+				}
+			}
+
+			// Update account data
+			info.account.Lamports = execAcc.Lamports
+			info.account.Data = execAcc.Data
+			info.account.RentEpoch = execAcc.RentEpoch
+		}
+	}
+
+	return nil
+}
+
 // Native program checks
 
 var (
-	systemProgramID = types.Pubkey{} // All zeros
-	computeBudgetProgramID = mustParsePubkey("ComputeBudget111111111111111111111111111111")
+	systemProgramID            = types.Pubkey{} // All zeros
+	computeBudgetProgramID     = mustParsePubkey("ComputeBudget111111111111111111111111111111")
+	tokenProgramID             = mustParsePubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	bpfLoaderProgramID         = mustParsePubkey("BPFLoader2111111111111111111111111111111111")
+	bpfLoaderUpgradeableProgramID = mustParsePubkey("BPFLoaderUpgradeab1e11111111111111111111111")
 )
 
 func isSystemProgram(id types.Pubkey) bool {
@@ -299,6 +400,18 @@ func isSystemProgram(id types.Pubkey) bool {
 
 func isComputeBudgetProgram(id types.Pubkey) bool {
 	return id == computeBudgetProgramID
+}
+
+func isTokenProgram(id types.Pubkey) bool {
+	return id == tokenProgramID
+}
+
+func isBPFLoader(id types.Pubkey) bool {
+	return id == bpfLoaderProgramID
+}
+
+func isBPFLoaderUpgradeable(id types.Pubkey) bool {
+	return id == bpfLoaderUpgradeableProgramID
 }
 
 func mustParsePubkey(s string) types.Pubkey {

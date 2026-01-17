@@ -663,6 +663,12 @@ func (r *Registry) registerMisc(ctx InvokeContext) {
 	})
 }
 
+// Murmur3Hash computes the murmur3 hash of a syscall name.
+// This is the standard murmur3 hash used by Solana for syscall identification.
+func Murmur3Hash(name string) uint32 {
+	return murmur3Hash(name)
+}
+
 // murmur3Hash computes the murmur3 hash of a syscall name.
 // This is a simplified version for syscall name hashing.
 func murmur3Hash(name string) uint32 {

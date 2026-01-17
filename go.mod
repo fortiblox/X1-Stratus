@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/dgraph-io/badger/v4 v4.2.0
+	github.com/klauspost/compress v1.12.3
 	github.com/mr-tron/base58 v1.2.0
 	github.com/zeebo/blake3 v0.2.3
 	go.etcd.io/bbolt v1.3.10
@@ -21,7 +22,6 @@ require (
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/flatbuffers v1.12.1 // indirect
-	github.com/klauspost/compress v1.12.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	go.opencensus.io v0.22.5 // indirect

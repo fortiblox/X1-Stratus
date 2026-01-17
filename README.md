@@ -274,11 +274,11 @@ X1-Stratus is a lightweight verifier with some limitations compared to full node
 - [x] Geyser gRPC client
 - [x] Node orchestrator
 - [x] CLI entry point
-- [ ] Full BPF program execution
-- [ ] Exact bank hash computation
-- [ ] Snapshot loading
-- [ ] RPC server
-- [ ] Web dashboard
+- [x] Full BPF program execution
+- [x] Exact bank hash computation
+- [x] Snapshot loading
+- [x] RPC server
+- [x] Web dashboard
 
 ## Prior Art
 
