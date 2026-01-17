@@ -1,0 +1,80 @@
+# X1-Stratus Configuration
+# Copy to config.yaml and customize
+
+# Node settings
+node:
+  # Data directory for AccountsDB and Blockstore
+  data_dir: /var/lib/stratus
+
+  # Log level: debug, info, warn, error
+  log_level: info
+
+# Block input source
+input:
+  # Mode: geyser (recommended), rpc (fallback), gossip (full network participation)
+  mode: geyser
+
+  # Geyser WebSocket endpoint for block streaming
+  geyser_url: ws://geyser.x1.xyz:10000
+
+  # Fallback RPC endpoint
+  fallback_rpc: https://rpc.mainnet.x1.xyz
+
+  # Known validators for snapshot download
+  known_validators:
+    - 7ufaUVtQKzGu5tpFtii9Cg8kR4jcpjQSXwsF3oVPSMZA
+    - 5Rzytnub9yGTFHqSmauFLsAbdXFbehMwPBLiuEgKajUN
+
+# Execution settings
+execution:
+  # Number of blocks to batch before processing
+  batch_size: 10
+
+  # Enable parallel signature verification
+  parallel_signatures: true
+
+  # Maximum compute units per block (0 = no limit)
+  max_block_cu: 0
+
+# Storage settings
+storage:
+  # AccountsDB backend: memory (testing), badger (recommended), rocksdb (performance)
+  accounts_backend: badger
+
+  # Account cache size in MB
+  accounts_cache_mb: 512
+
+  # Blockstore retention (slots, 0 = unlimited)
+  blockstore_retention_slots: 100000
+
+# RPC server settings
+rpc:
+  # Enable RPC server
+  enabled: true
+
+  # Listen address
+  bind: 0.0.0.0:8899
+
+  # Maximum concurrent connections
+  max_connections: 100
+
+  # Rate limiting (requests per second per IP)
+  rate_limit: 100
+
+# Metrics settings
+metrics:
+  # Enable Prometheus metrics
+  enabled: true
+
+  # Metrics listen address
+  bind: 0.0.0.0:9090
+
+# Gossip settings (only if input.mode = gossip)
+gossip:
+  # Gossip listen port
+  port: 8001
+
+  # Entrypoints
+  entrypoints:
+    - entrypoint0.mainnet.x1.xyz:8001
+    - entrypoint1.mainnet.x1.xyz:8001
