@@ -2,4 +2,7 @@ module github.com/fortiblox/X1-Stratus
 
 go 1.22
 
-// Dependencies will be added as development progresses
+require (
+	github.com/mr-tron/base58 v1.2.0
+	golang.org/x/crypto v0.28.0
+)
