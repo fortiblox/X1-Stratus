@@ -83,7 +83,11 @@ func (ip *Interpreter) Read8(addr uint64) (uint8, error) {
 }
 
 // Read16 reads a 16-bit value from virtual memory (little-endian).
+// Enforces 2-byte alignment.
 func (ip *Interpreter) Read16(addr uint64) (uint16, error) {
+	if addr&1 != 0 {
+		return 0, fmt.Errorf("%w: unaligned 16-bit read at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 2, false)
 	if err != nil {
 		return 0, err
@@ -92,7 +96,11 @@ func (ip *Interpreter) Read16(addr uint64) (uint16, error) {
 }
 
 // Read32 reads a 32-bit value from virtual memory (little-endian).
+// Enforces 4-byte alignment.
 func (ip *Interpreter) Read32(addr uint64) (uint32, error) {
+	if addr&3 != 0 {
+		return 0, fmt.Errorf("%w: unaligned 32-bit read at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 4, false)
 	if err != nil {
 		return 0, err
@@ -101,7 +109,11 @@ func (ip *Interpreter) Read32(addr uint64) (uint32, error) {
 }
 
 // Read64 reads a 64-bit value from virtual memory (little-endian).
+// Enforces 8-byte alignment.
 func (ip *Interpreter) Read64(addr uint64) (uint64, error) {
+	if addr&7 != 0 {
+		return 0, fmt.Errorf("%w: unaligned 64-bit read at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 8, false)
 	if err != nil {
 		return 0, err
@@ -130,7 +142,11 @@ func (ip *Interpreter) Write8(addr uint64, x uint8) error {
 }
 
 // Write16 writes a 16-bit value to virtual memory (little-endian).
+// Enforces 2-byte alignment.
 func (ip *Interpreter) Write16(addr uint64, x uint16) error {
+	if addr&1 != 0 {
+		return fmt.Errorf("%w: unaligned 16-bit write at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 2, true)
 	if err != nil {
 		return err
@@ -140,7 +156,11 @@ func (ip *Interpreter) Write16(addr uint64, x uint16) error {
 }
 
 // Write32 writes a 32-bit value to virtual memory (little-endian).
+// Enforces 4-byte alignment.
 func (ip *Interpreter) Write32(addr uint64, x uint32) error {
+	if addr&3 != 0 {
+		return fmt.Errorf("%w: unaligned 32-bit write at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 4, true)
 	if err != nil {
 		return err
@@ -150,7 +170,11 @@ func (ip *Interpreter) Write32(addr uint64, x uint32) error {
 }
 
 // Write64 writes a 64-bit value to virtual memory (little-endian).
+// Enforces 8-byte alignment.
 func (ip *Interpreter) Write64(addr uint64, x uint64) error {
+	if addr&7 != 0 {
+		return fmt.Errorf("%w: unaligned 64-bit write at 0x%x", ErrInvalidMemoryAccess, addr)
+	}
 	mem, err := ip.Translate(addr, 8, true)
 	if err != nil {
 		return err

@@ -10,6 +10,8 @@ import (
 	"errors"
 
 	"github.com/fortiblox/X1-Stratus/pkg/svm/sbpf"
+	"github.com/zeebo/blake3"
+	"golang.org/x/crypto/sha3"
 )
 
 // Syscall errors.
@@ -460,15 +462,107 @@ func (r *Registry) registerCrypto(ctx InvokeContext) {
 
 	// sol_keccak256 - Keccak256 hash
 	r.register("sol_keccak256", func(vm sbpf.VM, r1, r2, r3, r4, r5 uint64) (uint64, error) {
-		// Similar structure to SHA256, but uses Keccak
-		// For now, return error - needs golang.org/x/crypto/sha3
-		return 1, errors.New("keccak256 not yet implemented")
+		// r1 = pointer to array of (ptr, len) pairs
+		// r2 = number of slices
+		// r3 = result pointer (32 bytes)
+		numSlices := r2
+		resultAddr := r3
+
+		if numSlices > 100 {
+			return 0, ErrInvalidArgument
+		}
+
+		if err := ctx.ConsumeCU(CUKeccak256Base); err != nil {
+			return 0, err
+		}
+
+		h := sha3.NewLegacyKeccak256()
+
+		for i := uint64(0); i < numSlices; i++ {
+			ptr, err := vm.Read64(r1 + i*16)
+			if err != nil {
+				return 0, err
+			}
+			length, err := vm.Read64(r1 + i*16 + 8)
+			if err != nil {
+				return 0, err
+			}
+
+			// Validate size
+			if length > MaxMemOpSize {
+				return 0, ErrInvalidLength
+			}
+
+			if err := ctx.ConsumeCU(CUKeccak256PerByte * length); err != nil {
+				return 0, err
+			}
+
+			data := make([]byte, length)
+			if err := vm.Read(ptr, data); err != nil {
+				return 0, err
+			}
+			h.Write(data)
+		}
+
+		result := h.Sum(nil)
+		if err := vm.Write(resultAddr, result); err != nil {
+			return 0, err
+		}
+
+		return 0, nil
 	})
 
 	// sol_blake3 - Blake3 hash
 	r.register("sol_blake3", func(vm sbpf.VM, r1, r2, r3, r4, r5 uint64) (uint64, error) {
-		// Blake3 needs external library
-		return 1, errors.New("blake3 not yet implemented")
+		// r1 = pointer to array of (ptr, len) pairs
+		// r2 = number of slices
+		// r3 = result pointer (32 bytes)
+		numSlices := r2
+		resultAddr := r3
+
+		if numSlices > 100 {
+			return 0, ErrInvalidArgument
+		}
+
+		if err := ctx.ConsumeCU(CUBlake3Base); err != nil {
+			return 0, err
+		}
+
+		h := blake3.New()
+
+		for i := uint64(0); i < numSlices; i++ {
+			ptr, err := vm.Read64(r1 + i*16)
+			if err != nil {
+				return 0, err
+			}
+			length, err := vm.Read64(r1 + i*16 + 8)
+			if err != nil {
+				return 0, err
+			}
+
+			// Validate size
+			if length > MaxMemOpSize {
+				return 0, ErrInvalidLength
+			}
+
+			if err := ctx.ConsumeCU(CUBlake3PerByte * length); err != nil {
+				return 0, err
+			}
+
+			data := make([]byte, length)
+			if err := vm.Read(ptr, data); err != nil {
+				return 0, err
+			}
+			h.Write(data)
+		}
+
+		result := make([]byte, 32)
+		h.Sum(result[:0])
+		if err := vm.Write(resultAddr, result); err != nil {
+			return 0, err
+		}
+
+		return 0, nil
 	})
 }
 

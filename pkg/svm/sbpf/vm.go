@@ -44,6 +44,60 @@ var (
 	ErrExitCalled          = errors.New("exit called")
 )
 
+// sBPF instruction costs.
+const (
+	CostALU   = uint64(1)  // Simple ALU operations
+	CostMul   = uint64(4)  // Multiplication
+	CostDiv   = uint64(12) // Division/modulo
+	CostLoad  = uint64(2)  // Memory load
+	CostStore = uint64(2)  // Memory store
+	CostLddw  = uint64(2)  // 64-bit immediate load
+	CostJump  = uint64(1)  // Jump instructions
+	CostCall  = uint64(5)  // Function calls
+	CostExit  = uint64(1)  // Exit/return
+)
+
+// instructionCost returns the compute cost for an opcode.
+func instructionCost(op uint8) uint64 {
+	class := op & 0x07
+	aluOp := op & 0xF0
+
+	switch class {
+	case ClassAlu, ClassAlu64:
+		switch aluOp {
+		case AluMul:
+			return CostMul
+		case AluDiv, AluMod:
+			return CostDiv
+		default:
+			return CostALU
+		}
+
+	case ClassLd, ClassLdx:
+		if op == OpLddw {
+			return CostLddw
+		}
+		return CostLoad
+
+	case ClassSt, ClassStx:
+		return CostStore
+
+	case ClassJmp, ClassJmp32:
+		jmpOp := op & 0xF0
+		switch jmpOp {
+		case JmpCall:
+			return CostCall
+		case JmpExit:
+			return CostExit
+		default:
+			return CostJump
+		}
+
+	default:
+		return CostALU
+	}
+}
+
 // VM is the sBPF virtual machine interface.
 type VM interface {
 	// VMContext returns the execution context.
@@ -214,6 +268,7 @@ type Interpreter struct {
 	heapSize     uint64
 	computeMeter *ComputeMeter
 	syscalls     SyscallRegistry
+	functions    map[uint32]uint64 // Internal function registry
 	vmContext    interface{}
 
 	// Execution state
@@ -238,6 +293,14 @@ func NewInterpreter(program *Program, input []byte, opts InterpreterOpts) *Inter
 		heapSize = HeapMax
 	}
 
+	// Copy function registry from program
+	functions := make(map[uint32]uint64)
+	if program.Functions != nil {
+		for k, v := range program.Functions {
+			functions[k] = v
+		}
+	}
+
 	return &Interpreter{
 		text:         program.Text,
 		ro:           program.RO,
@@ -248,6 +311,7 @@ func NewInterpreter(program *Program, input []byte, opts InterpreterOpts) *Inter
 		heapSize:     heapSize,
 		computeMeter: NewComputeMeter(opts.MaxCU),
 		syscalls:     opts.Syscalls,
+		functions:    functions,
 		vmContext:    opts.Context,
 	}
 }
@@ -272,17 +336,18 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 			return 0, fmt.Errorf("program counter out of bounds: %d", pc)
 		}
 
-		// Consume compute unit for instruction
-		if err := ip.computeMeter.Consume(1); err != nil {
-			return 0, err
-		}
-
 		ins := ip.text[pc]
 		op := uint8(ins & 0xFF)
 		dst := uint8((ins >> 8) & 0x0F)
 		src := uint8((ins >> 12) & 0x0F)
 		off := int16(ins >> 16)
 		imm := int32(ins >> 32)
+
+		// Consume variable compute units based on instruction type
+		cost := instructionCost(op)
+		if err := ip.computeMeter.Consume(cost); err != nil {
+			return 0, err
+		}
 
 		// Validate register indices (sBPF has 11 registers: R0-R10)
 		if dst > 10 || src > 10 {
@@ -589,6 +654,96 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 				pc += int64(off)
 			}
 
+		// 32-bit jump conditional (compare 32-bit values)
+		case OpJeq32Imm:
+			if uint32(r[dst]) == uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJeq32Reg:
+			if uint32(r[dst]) == uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJgt32Imm:
+			if uint32(r[dst]) > uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJgt32Reg:
+			if uint32(r[dst]) > uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJge32Imm:
+			if uint32(r[dst]) >= uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJge32Reg:
+			if uint32(r[dst]) >= uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJlt32Imm:
+			if uint32(r[dst]) < uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJlt32Reg:
+			if uint32(r[dst]) < uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJle32Imm:
+			if uint32(r[dst]) <= uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJle32Reg:
+			if uint32(r[dst]) <= uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJne32Imm:
+			if uint32(r[dst]) != uint32(imm) {
+				pc += int64(off)
+			}
+		case OpJne32Reg:
+			if uint32(r[dst]) != uint32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJset32Imm:
+			if uint32(r[dst])&uint32(imm) != 0 {
+				pc += int64(off)
+			}
+		case OpJset32Reg:
+			if uint32(r[dst])&uint32(r[src]) != 0 {
+				pc += int64(off)
+			}
+		case OpJsgt32Imm:
+			if int32(r[dst]) > int32(imm) {
+				pc += int64(off)
+			}
+		case OpJsgt32Reg:
+			if int32(r[dst]) > int32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJsge32Imm:
+			if int32(r[dst]) >= int32(imm) {
+				pc += int64(off)
+			}
+		case OpJsge32Reg:
+			if int32(r[dst]) >= int32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJslt32Imm:
+			if int32(r[dst]) < int32(imm) {
+				pc += int64(off)
+			}
+		case OpJslt32Reg:
+			if int32(r[dst]) < int32(r[src]) {
+				pc += int64(off)
+			}
+		case OpJsle32Imm:
+			if int32(r[dst]) <= int32(imm) {
+				pc += int64(off)
+			}
+		case OpJsle32Reg:
+			if int32(r[dst]) <= int32(r[src]) {
+				pc += int64(off)
+			}
+
 		// Call and exit
 		case OpCall:
 			hash := uint32(imm)
@@ -599,9 +754,27 @@ func (ip *Interpreter) Run() (r0 uint64, err error) {
 					return 0, err
 				}
 				r[0] = result
+			} else if targetPC, ok := ip.functions[hash]; ok {
+				// Internal BPF-to-BPF function call
+				// Push current frame with return address
+				if err := ip.stack.Push(r[:], pc+1); err != nil {
+					return 0, err
+				}
+				// Jump to function entry point
+				pc = int64(targetPC)
+				continue // Don't increment PC
 			} else {
-				// Internal function call (not yet implemented)
-				return 0, fmt.Errorf("internal function call not implemented: 0x%x", hash)
+				// Unknown function - check if it's a relative call (src == 1)
+				// In sBPF, when src register is 1, imm is a relative offset
+				if src == 1 {
+					// Relative call: target = pc + imm + 1
+					if err := ip.stack.Push(r[:], pc+1); err != nil {
+						return 0, err
+					}
+					pc = pc + int64(imm) + 1
+					continue
+				}
+				return 0, fmt.Errorf("%w: unknown function 0x%x", ErrUnknownSyscall, hash)
 			}
 
 		case OpExit:
@@ -653,7 +826,8 @@ func (ip *Interpreter) UpdateHeapSize(size uint64) {
 
 // Program represents a loaded sBPF program.
 type Program struct {
-	Text  []uint64 // Instructions
-	RO    []byte   // Read-only data
-	Entry uint64   // Entry point
+	Text      []uint64          // Instructions
+	RO        []byte            // Read-only data
+	Entry     uint64            // Entry point
+	Functions map[uint32]uint64 // Function registry: hash -> PC offset
 }

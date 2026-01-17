@@ -56,6 +56,34 @@ var (
 // Maximum account data size.
 const MaxAccountDataSize = 10 * 1024 * 1024 // 10 MB
 
+// Nonce account data size (80 bytes: 4 version + 4 state + 32 authority + 32 blockhash + 8 fee calculator)
+const NonceAccountDataSize = 80
+
+// NonceState represents the state of a nonce account.
+type NonceState uint32
+
+const (
+	NonceStateUninitialized NonceState = 0
+	NonceStateInitialized   NonceState = 1
+)
+
+// NonceData represents the data stored in a nonce account.
+type NonceData struct {
+	Version      uint32   // Always 1 for current version
+	State        uint32   // 0 = uninitialized, 1 = initialized
+	Authority    [32]byte // Authority authorized to advance nonce
+	Blockhash    [32]byte // Stored blockhash (durable transaction nonce)
+	FeePerSig    uint64   // Fee calculator (lamports per signature)
+}
+
+// Nonce errors.
+var (
+	ErrNonceNotInitialized     = errors.New("nonce account not initialized")
+	ErrNonceAlreadyInitialized = errors.New("nonce account already initialized")
+	ErrNonceBlockhashNotExpired = errors.New("nonce blockhash not yet expired")
+	ErrNonceUnauthorized       = errors.New("nonce authority mismatch")
+)
+
 // AccountMeta describes an account in an instruction.
 type AccountMeta struct {
 	Pubkey     [32]byte
@@ -82,6 +110,12 @@ type InvokeContext interface {
 
 	// GetRentMinimum returns the rent-exempt minimum for given data size.
 	GetRentMinimum(dataLen uint64) uint64
+
+	// GetRecentBlockhash returns the most recent blockhash.
+	GetRecentBlockhash() [32]byte
+
+	// GetFeePerSignature returns the current fee per signature.
+	GetFeePerSignature() uint64
 
 	// Log records a log message.
 	Log(msg string)
@@ -120,6 +154,14 @@ func (p *Processor) Process(ctx InvokeContext, data []byte) error {
 		return p.processAssignWithSeed(ctx, data[4:])
 	case InstructionTransferWithSeed:
 		return p.processTransferWithSeed(ctx, data[4:])
+	case InstructionInitializeNonceAccount:
+		return p.processInitializeNonceAccount(ctx, data[4:])
+	case InstructionAdvanceNonceAccount:
+		return p.processAdvanceNonceAccount(ctx, data[4:])
+	case InstructionWithdrawNonceAccount:
+		return p.processWithdrawNonceAccount(ctx, data[4:])
+	case InstructionAuthorizeNonceAccount:
+		return p.processAuthorizeNonceAccount(ctx, data[4:])
 	default:
 		return ErrInvalidInstructionData
 	}
@@ -590,4 +632,254 @@ func createWithSeedAddress(base [32]byte, seed string, owner [32]byte) [32]byte 
 	var result [32]byte
 	copy(result[:], h.Sum(nil))
 	return result
+}
+
+// processInitializeNonceAccount initializes a nonce account.
+func (p *Processor) processInitializeNonceAccount(ctx InvokeContext, data []byte) error {
+	// Parse parameters: authority (32)
+	if len(data) < 32 {
+		return ErrInvalidInstructionData
+	}
+
+	var authority [32]byte
+	copy(authority[:], data[0:32])
+
+	// Get accounts: [0] = nonce account, [1] = recent blockhashes sysvar, [2] = rent sysvar
+	nonceAccount, err := ctx.GetAccount(0)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	// Verify nonce account is writable
+	if !nonceAccount.IsWritable {
+		return errors.New("nonce account not writable")
+	}
+
+	// Verify nonce account is owned by system program
+	if nonceAccount.Owner != ProgramID {
+		return ErrInvalidAccountOwner
+	}
+
+	// Check if already initialized
+	if len(nonceAccount.Data) >= 8 && binary.LittleEndian.Uint32(nonceAccount.Data[4:8]) == uint32(NonceStateInitialized) {
+		return ErrNonceAlreadyInitialized
+	}
+
+	// Ensure account has enough space
+	if len(nonceAccount.Data) < NonceAccountDataSize {
+		return ErrAccountDataTooSmall
+	}
+
+	// Check rent exemption
+	rentMinimum := ctx.GetRentMinimum(NonceAccountDataSize)
+	if nonceAccount.Lamports < rentMinimum {
+		return ErrAccountNotRentExempt
+	}
+
+	// Get recent blockhash
+	blockhash := ctx.GetRecentBlockhash()
+	feePerSig := ctx.GetFeePerSignature()
+
+	// Write nonce data
+	binary.LittleEndian.PutUint32(nonceAccount.Data[0:4], 1)                    // Version
+	binary.LittleEndian.PutUint32(nonceAccount.Data[4:8], uint32(NonceStateInitialized)) // State
+	copy(nonceAccount.Data[8:40], authority[:])                                 // Authority
+	copy(nonceAccount.Data[40:72], blockhash[:])                                // Blockhash
+	binary.LittleEndian.PutUint64(nonceAccount.Data[72:80], feePerSig)          // Fee per signature
+
+	ctx.Log("InitializeNonceAccount: success")
+	return nil
+}
+
+// processAdvanceNonceAccount advances the nonce to a new blockhash.
+func (p *Processor) processAdvanceNonceAccount(ctx InvokeContext, data []byte) error {
+	// Get accounts: [0] = nonce account, [1] = recent blockhashes sysvar, [2] = nonce authority
+	nonceAccount, err := ctx.GetAccount(0)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	authority, err := ctx.GetAccount(2)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	// Authority must be signer
+	if !authority.IsSigner {
+		return ErrMissingRequiredSignature
+	}
+
+	// Verify nonce account is writable
+	if !nonceAccount.IsWritable {
+		return errors.New("nonce account not writable")
+	}
+
+	// Check if initialized
+	if len(nonceAccount.Data) < NonceAccountDataSize {
+		return ErrNonceNotInitialized
+	}
+	if binary.LittleEndian.Uint32(nonceAccount.Data[4:8]) != uint32(NonceStateInitialized) {
+		return ErrNonceNotInitialized
+	}
+
+	// Verify authority
+	var storedAuthority [32]byte
+	copy(storedAuthority[:], nonceAccount.Data[8:40])
+	if storedAuthority != authority.Key {
+		return ErrNonceUnauthorized
+	}
+
+	// Get new blockhash
+	newBlockhash := ctx.GetRecentBlockhash()
+
+	// Check that new blockhash is different from stored one
+	var storedBlockhash [32]byte
+	copy(storedBlockhash[:], nonceAccount.Data[40:72])
+	if storedBlockhash == newBlockhash {
+		return ErrNonceBlockhashNotExpired
+	}
+
+	// Update blockhash and fee
+	feePerSig := ctx.GetFeePerSignature()
+	copy(nonceAccount.Data[40:72], newBlockhash[:])
+	binary.LittleEndian.PutUint64(nonceAccount.Data[72:80], feePerSig)
+
+	ctx.Log("AdvanceNonceAccount: success")
+	return nil
+}
+
+// processWithdrawNonceAccount withdraws lamports from a nonce account.
+func (p *Processor) processWithdrawNonceAccount(ctx InvokeContext, data []byte) error {
+	// Parse parameters: lamports (8)
+	if len(data) < 8 {
+		return ErrInvalidInstructionData
+	}
+
+	lamports := binary.LittleEndian.Uint64(data[0:8])
+
+	// Get accounts: [0] = nonce account, [1] = destination, [2] = recent blockhashes, [3] = rent, [4] = authority
+	nonceAccount, err := ctx.GetAccount(0)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	destination, err := ctx.GetAccount(1)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	authority, err := ctx.GetAccount(4)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	// Authority must be signer
+	if !authority.IsSigner {
+		return ErrMissingRequiredSignature
+	}
+
+	// Verify accounts are writable
+	if !nonceAccount.IsWritable || !destination.IsWritable {
+		return errors.New("accounts not writable")
+	}
+
+	// Check if initialized
+	if len(nonceAccount.Data) < NonceAccountDataSize {
+		return ErrNonceNotInitialized
+	}
+	if binary.LittleEndian.Uint32(nonceAccount.Data[4:8]) != uint32(NonceStateInitialized) {
+		return ErrNonceNotInitialized
+	}
+
+	// Verify authority
+	var storedAuthority [32]byte
+	copy(storedAuthority[:], nonceAccount.Data[8:40])
+	if storedAuthority != authority.Key {
+		return ErrNonceUnauthorized
+	}
+
+	// Check balance
+	if nonceAccount.Lamports < lamports {
+		return ErrInsufficientFunds
+	}
+
+	// If withdrawing all lamports, check that we can close the account
+	// Otherwise, check rent exemption
+	remaining := nonceAccount.Lamports - lamports
+	if remaining > 0 {
+		rentMinimum := ctx.GetRentMinimum(NonceAccountDataSize)
+		if remaining < rentMinimum {
+			return ErrAccountNotRentExempt
+		}
+	}
+
+	// Check for overflow
+	if destination.Lamports > ^uint64(0)-lamports {
+		return errors.New("lamport overflow")
+	}
+
+	// Execute withdrawal
+	nonceAccount.Lamports -= lamports
+	destination.Lamports += lamports
+
+	// If account is now empty, mark as uninitialized
+	if nonceAccount.Lamports == 0 {
+		binary.LittleEndian.PutUint32(nonceAccount.Data[4:8], uint32(NonceStateUninitialized))
+	}
+
+	ctx.Log("WithdrawNonceAccount: success")
+	return nil
+}
+
+// processAuthorizeNonceAccount changes the authority of a nonce account.
+func (p *Processor) processAuthorizeNonceAccount(ctx InvokeContext, data []byte) error {
+	// Parse parameters: new_authority (32)
+	if len(data) < 32 {
+		return ErrInvalidInstructionData
+	}
+
+	var newAuthority [32]byte
+	copy(newAuthority[:], data[0:32])
+
+	// Get accounts: [0] = nonce account, [1] = current authority
+	nonceAccount, err := ctx.GetAccount(0)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	authority, err := ctx.GetAccount(1)
+	if err != nil {
+		return ErrNotEnoughAccountKeys
+	}
+
+	// Authority must be signer
+	if !authority.IsSigner {
+		return ErrMissingRequiredSignature
+	}
+
+	// Verify nonce account is writable
+	if !nonceAccount.IsWritable {
+		return errors.New("nonce account not writable")
+	}
+
+	// Check if initialized
+	if len(nonceAccount.Data) < NonceAccountDataSize {
+		return ErrNonceNotInitialized
+	}
+	if binary.LittleEndian.Uint32(nonceAccount.Data[4:8]) != uint32(NonceStateInitialized) {
+		return ErrNonceNotInitialized
+	}
+
+	// Verify current authority
+	var storedAuthority [32]byte
+	copy(storedAuthority[:], nonceAccount.Data[8:40])
+	if storedAuthority != authority.Key {
+		return ErrNonceUnauthorized
+	}
+
+	// Update authority
+	copy(nonceAccount.Data[8:40], newAuthority[:])
+
+	ctx.Log("AuthorizeNonceAccount: success")
+	return nil
 }

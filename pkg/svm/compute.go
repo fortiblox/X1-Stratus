@@ -56,6 +56,68 @@ const (
 	CUBPFLoaderDefault           = uint64(570)      // BPF loader base
 )
 
+// sBPF instruction costs.
+// Different instruction classes have different compute costs.
+const (
+	// ALU operations
+	CUInstructionALU     = uint64(1)   // Simple ALU (add, sub, or, and, xor, mov, neg)
+	CUInstructionMul     = uint64(4)   // Multiplication
+	CUInstructionDiv     = uint64(12)  // Division/modulo (more expensive)
+
+	// Memory operations
+	CUInstructionLoad    = uint64(2)   // Memory load
+	CUInstructionStore   = uint64(2)   // Memory store
+	CUInstructionLddw    = uint64(2)   // 64-bit immediate load
+
+	// Control flow
+	CUInstructionJump    = uint64(1)   // Conditional/unconditional jump
+	CUInstructionCall    = uint64(5)   // Function call (internal)
+	CUInstructionExit    = uint64(1)   // Exit/return
+)
+
+// InstructionCost returns the compute unit cost for an sBPF opcode.
+func InstructionCost(op uint8) uint64 {
+	// Instruction class is in bits 0-2
+	class := op & 0x07
+	// ALU operation is in bits 4-7
+	aluOp := op & 0xF0
+
+	switch class {
+	case 0x04, 0x07: // ClassAlu (32-bit), ClassAlu64 (64-bit)
+		switch aluOp {
+		case 0x20: // mul
+			return CUInstructionMul
+		case 0x30, 0x90: // div, mod
+			return CUInstructionDiv
+		default:
+			return CUInstructionALU
+		}
+
+	case 0x00, 0x01: // ClassLd, ClassLdx - loads
+		if op == 0x18 { // lddw
+			return CUInstructionLddw
+		}
+		return CUInstructionLoad
+
+	case 0x02, 0x03: // ClassSt, ClassStx - stores
+		return CUInstructionStore
+
+	case 0x05, 0x06: // ClassJmp, ClassJmp32 - jumps
+		jmpOp := op & 0xF0
+		switch jmpOp {
+		case 0x80: // call
+			return CUInstructionCall
+		case 0x90: // exit
+			return CUInstructionExit
+		default:
+			return CUInstructionJump
+		}
+
+	default:
+		return CUInstructionALU // Default to simple cost
+	}
+}
+
 // Heap size constants.
 const (
 	HeapSizeDefault = uint32(32 * 1024)  // 32 KB

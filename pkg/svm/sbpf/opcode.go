@@ -190,6 +190,32 @@ const (
 	OpJsleReg = ClassJmp | SrcX | JmpJsle   // 0xdd - jump if less or equal (reg, signed)
 )
 
+// 32-bit jump opcodes (for comparing 32-bit values).
+const (
+	OpJeq32Imm  = ClassJmp32 | SrcK | JmpJeq   // 0x16 - jump if equal (32-bit imm)
+	OpJeq32Reg  = ClassJmp32 | SrcX | JmpJeq   // 0x1e - jump if equal (32-bit reg)
+	OpJgt32Imm  = ClassJmp32 | SrcK | JmpJgt   // 0x26 - jump if greater (32-bit imm, unsigned)
+	OpJgt32Reg  = ClassJmp32 | SrcX | JmpJgt   // 0x2e - jump if greater (32-bit reg, unsigned)
+	OpJge32Imm  = ClassJmp32 | SrcK | JmpJge   // 0x36 - jump if greater or equal (32-bit imm, unsigned)
+	OpJge32Reg  = ClassJmp32 | SrcX | JmpJge   // 0x3e - jump if greater or equal (32-bit reg, unsigned)
+	OpJset32Imm = ClassJmp32 | SrcK | JmpJset  // 0x46 - jump if set (32-bit imm)
+	OpJset32Reg = ClassJmp32 | SrcX | JmpJset  // 0x4e - jump if set (32-bit reg)
+	OpJne32Imm  = ClassJmp32 | SrcK | JmpJne   // 0x56 - jump if not equal (32-bit imm)
+	OpJne32Reg  = ClassJmp32 | SrcX | JmpJne   // 0x5e - jump if not equal (32-bit reg)
+	OpJsgt32Imm = ClassJmp32 | SrcK | JmpJsgt  // 0x66 - jump if greater (32-bit imm, signed)
+	OpJsgt32Reg = ClassJmp32 | SrcX | JmpJsgt  // 0x6e - jump if greater (32-bit reg, signed)
+	OpJsge32Imm = ClassJmp32 | SrcK | JmpJsge  // 0x76 - jump if greater or equal (32-bit imm, signed)
+	OpJsge32Reg = ClassJmp32 | SrcX | JmpJsge  // 0x7e - jump if greater or equal (32-bit reg, signed)
+	OpJlt32Imm  = ClassJmp32 | SrcK | JmpJlt   // 0xa6 - jump if less (32-bit imm, unsigned)
+	OpJlt32Reg  = ClassJmp32 | SrcX | JmpJlt   // 0xae - jump if less (32-bit reg, unsigned)
+	OpJle32Imm  = ClassJmp32 | SrcK | JmpJle   // 0xb6 - jump if less or equal (32-bit imm, unsigned)
+	OpJle32Reg  = ClassJmp32 | SrcX | JmpJle   // 0xbe - jump if less or equal (32-bit reg, unsigned)
+	OpJslt32Imm = ClassJmp32 | SrcK | JmpJslt  // 0xc6 - jump if less (32-bit imm, signed)
+	OpJslt32Reg = ClassJmp32 | SrcX | JmpJslt  // 0xce - jump if less (32-bit reg, signed)
+	OpJsle32Imm = ClassJmp32 | SrcK | JmpJsle  // 0xd6 - jump if less or equal (32-bit imm, signed)
+	OpJsle32Reg = ClassJmp32 | SrcX | JmpJsle  // 0xde - jump if less or equal (32-bit reg, signed)
+)
+
 // Special opcodes.
 const (
 	OpLddw = 0x18 // Load 64-bit immediate (uses two instruction slots)
